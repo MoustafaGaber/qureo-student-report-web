@@ -50,7 +50,6 @@ const allowedEmails = new Set((process.env.ALLOWED_EMAILS || '').split(',').map(
 const allowedDomains = new Set((process.env.ALLOWED_EMAIL_DOMAINS || '').split(',').map((value) => value.trim().replace(/^@/, '').toLowerCase()).filter(Boolean));
 const hasAllowlist = allowedEmails.size > 0 || allowedDomains.size > 0;
 
-const state = { running: false, ownerUid: '', stopRequested: false, total: 0, done: 0, okCount: 0, failCount: 0, rows: [], xlsxBuffer: null, error: '', elapsedSec: 0 };
 const server = express();
 server.disable('x-powered-by');
 server.use((req, res, next) => {
@@ -135,14 +134,6 @@ function formatEgyptTime(value) {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 }
 
-function cairoTimestamp(date = new Date()) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(date).map(({ type, value }) => [type, value]));
-  return `${parts.year}-${parts.month}-${parts.day}_${parts.hour}-${parts.minute}-${parts.second}`;
-}
-
 class CookieJar {
   constructor() { this.cookies = new Map(); }
   save(res) {
@@ -197,38 +188,20 @@ async function checkStudent(student) {
   } catch { return { status: 'تعذر الاتصال بخدمة QUREO', chaptersCount: '', diamonds: '', lastActivity: '' }; }
 }
 
-function buildExcelWorkbook(rows) {
-  const validRows = rows.filter(Boolean), wb = XLSX.utils.book_new(); wb.Workbook = { Views: [{ RTL: true }] };
-  const studentData = [['الاسم', 'الفصل', 'رقم الطالب', 'الحالة', 'الفصول', `من ${TOTAL_CHAPTERS}`, 'النسبة %', 'الألماس', 'آخر نشاط']];
-  let buckets = [0, 0, 0, 0, 0], failed = 0;
-  for (const r of validRows) {
-    studentData.push([r.name, r.className, r.studentId, r.status, r.chaptersCount === '' ? '' : Number(r.chaptersCount), r.totalChapters, r.pct === '' ? '' : Number(r.pct), r.diamonds === '' ? '' : Number(r.diamonds), r.lastActivity]);
-    if (r.status !== 'ok' || r.chaptersCount === '') failed++;
-    else { const n = Number(r.chaptersCount); buckets[n === 0 ? 0 : n <= 10 ? 1 : n <= 17 ? 2 : n <= 41 ? 3 : 4]++; }
-  }
-  const ws = XLSX.utils.aoa_to_sheet(studentData); ws['!views'] = [{ rightToLeft: true }]; ws['!cols'] = [32, 24, 15, 24, 10, 10, 11, 10, 18].map((wch) => ({ wch })); XLSX.utils.book_append_sheet(wb, ws, 'بيانات الطلاب');
-  const total = buckets.reduce((a, b) => a + b, 0), pct = (n) => total ? Math.round(n / total * 1000) / 10 : 0;
-  const summary = [['الفئة / مستوى الإنجاز', 'عدد الطلاب', 'النسبة من المفحوصين %'], ['لم ينجزوا أي فصل (0 فصل)', buckets[0], pct(buckets[0])], ['أنجزوا من 1 إلى 10 فصول', buckets[1], pct(buckets[1])], ['أنجزوا من 11 إلى 17 فصلًا', buckets[2], pct(buckets[2])], ['أنجزوا من 18 إلى 41 فصلًا', buckets[3], pct(buckets[3])], ['أتموا المنهج كاملًا (42 فصلًا)', buckets[4], pct(buckets[4])], ['إجمالي الطلاب المفحوصين بنجاح', total, total ? 100 : 0]];
-  if (failed) summary.push(['تعذر فحصهم', failed, ''], ['الإجمالي الكلي بالملف', total + failed, '']);
-  const ws2 = XLSX.utils.aoa_to_sheet(summary); ws2['!views'] = [{ rightToLeft: true }]; ws2['!cols'] = [36, 16, 24].map((wch) => ({ wch })); XLSX.utils.book_append_sheet(wb, ws2, 'ملخص الإحصائيات');
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-}
-
-async function runJob(students, uid) {
+async function runJob(students, onProgress, shouldStop) {
   const started = Date.now();
-  Object.assign(state, { running: true, ownerUid: uid, stopRequested: false, total: students.length, done: 0, okCount: 0, failCount: 0, rows: new Array(students.length), xlsxBuffer: null, error: '', elapsedSec: 0 });
-  let next = 0;
+  let next = 0, done = 0, okCount = 0, failCount = 0;
+  const rows = new Array(students.length);
   async function worker() {
-    while (next < students.length && !state.stopRequested) {
+    while (next < students.length && !shouldStop()) {
       const i = next++, s = students[i], result = await checkStudent(s);
-      state.rows[i] = { name: s.name, className: s.class, studentId: s.student_id, status: result.status, chaptersCount: result.chaptersCount, totalChapters: TOTAL_CHAPTERS, pct: result.chaptersCount === '' ? '' : Math.round(result.chaptersCount / TOTAL_CHAPTERS * 100), diamonds: result.diamonds, lastActivity: result.lastActivity };
-      state.done++; if (result.status === 'ok') state.okCount++; else state.failCount++;
-      state.elapsedSec = ((Date.now() - started) / 1000).toFixed(1);
+      rows[i] = { name: s.name, className: s.class, studentId: s.student_id, status: result.status, chaptersCount: result.chaptersCount, totalChapters: TOTAL_CHAPTERS, pct: result.chaptersCount === '' ? '' : Math.round(result.chaptersCount / TOTAL_CHAPTERS * 100), diamonds: result.diamonds, lastActivity: result.lastActivity };
+      done++; if (result.status === 'ok') okCount++; else failCount++;
+      onProgress({ row: rows[i], total: students.length, done, okCount, failCount, elapsedSec: ((Date.now() - started) / 1000).toFixed(1) });
     }
   }
-  try { await Promise.all(Array.from({ length: Math.min(CONCURRENCY, students.length) }, worker)); state.xlsxBuffer = buildExcelWorkbook(state.rows); }
-  catch { state.error = 'حدث خطأ أثناء إنشاء التقرير.'; }
-  finally { state.running = false; state.elapsedSec = ((Date.now() - started) / 1000).toFixed(1); }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, students.length) }, worker));
+  return { rows: rows.filter(Boolean), total: students.length, done, okCount, failCount, stopped: shouldStop(), elapsedSec: ((Date.now() - started) / 1000).toFixed(1) };
 }
 
 function isEmailAllowed(email) {
@@ -258,40 +231,44 @@ server.get('/api/config', (req, res) => res.json({
   authReady: Boolean(firebaseAuth) && hasAllowlist,
   drivePickerApiKey: process.env.VITE_GOOGLE_PICKER_API_KEY || '',
   drivePickerReady: Boolean(process.env.VITE_GOOGLE_PICKER_API_KEY && firebaseWebConfig.messagingSenderId),
+  maxFileBytes: process.env.VERCEL ? 4 * 1024 * 1024 : MAX_FILE_BYTES,
 }));
 server.use('/api', express.json({ limit: '16kb' }));
 server.get('/api/me', requireTeacher, (req, res) => res.json({ email: req.teacher.email }));
-server.post('/api/start', requireTeacher, express.raw({ type: 'application/octet-stream', limit: MAX_FILE_BYTES }), async (req, res) => {
-  if (state.running) return res.status(409).json({ error: 'هناك فحص آخر يعمل حاليًا. حاول بعد انتهائه.' });
+server.post('/api/check', requireTeacher, express.raw({ type: 'application/octet-stream', limit: MAX_FILE_BYTES }), async (req, res) => {
   const filename = path.basename(String(req.query.name || ''));
+  let students;
   try {
     const buffer = req.body;
     if (!Buffer.isBuffer(buffer) || !buffer.length) return res.status(400).json({ error: 'الملف فارغ.' });
-    if (buffer.length > MAX_FILE_BYTES) return res.status(413).json({ error: 'حجم الملف يتجاوز الحد الأقصى (8 ميجابايت).' });
-    const students = parseStudents(buffer, filename);
-    void runJob(students, req.teacher.uid);
-    return res.status(202).json({ ok: true, total: students.length });
+    const maxFileBytes = process.env.VERCEL ? 4 * 1024 * 1024 : MAX_FILE_BYTES;
+    if (buffer.length > maxFileBytes) return res.status(413).json({ error: process.env.VERCEL ? 'على نسخة Vercel المجانية، الحد العملي للملف 4 ميجابايت بسبب حد طلبات المنصة.' : 'حجم الملف يتجاوز الحد الأقصى (8 ميجابايت).' });
+    students = parseStudents(buffer, filename);
   } catch (error) {
     return res.status(400).json({ error: error.message || 'تعذر التحقق من الملف.' });
   }
-});
-server.post('/api/stop', requireTeacher, (req, res) => {
-  if (state.ownerUid !== req.teacher.uid) return res.status(404).json({ error: 'لا توجد مهمة تخص هذا الحساب.' });
-  state.stopRequested = true;
-  return res.json({ ok: true });
-});
-server.get('/api/status', requireTeacher, (req, res) => {
-  if (state.ownerUid && state.ownerUid !== req.teacher.uid) return res.status(404).json({ error: 'لا توجد نتائج تخص هذا الحساب.' });
-  return res.json({ running: state.running, stopRequested: state.stopRequested, total: state.total, done: state.done, okCount: state.okCount, failCount: state.failCount, elapsedSec: state.elapsedSec, error: state.error, hasReport: Boolean(state.xlsxBuffer), rows: state.rows });
-});
-server.get('/api/download', requireTeacher, (req, res) => {
-  if (state.ownerUid !== req.teacher.uid || !state.xlsxBuffer) return res.status(404).json({ error: 'لا يوجد تقرير جاهز لهذا الحساب.' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="qureo-report-${cairoTimestamp()}.xlsx"`);
-  return res.end(state.xlsxBuffer);
+  res.status(200);
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  let disconnected = false;
+  res.on('close', () => { if (!res.writableEnded) disconnected = true; });
+  const send = (event) => { if (!disconnected && !res.writableEnded) res.write(`${JSON.stringify(event)}\n`); };
+  send({ type: 'start', total: students.length });
+  try {
+    const result = await runJob(students, (progress) => send({ type: 'progress', ...progress }), () => disconnected);
+    send({ type: 'complete', ...result });
+    if (!disconnected && !res.writableEnded) res.end();
+  } catch {
+    send({ type: 'error', error: 'حدث خطأ أثناء الفحص. النتائج المكتملة ظاهرة ويمكن تنزيلها.' });
+    if (!disconnected && !res.writableEnded) res.end();
+  }
 });
 
-if (require('node:fs').existsSync(CLIENT_DIST)) {
+if (process.env.VERCEL) {
+  // Vercel serves files from /public through its CDN; Express handles API requests only.
+} else if (require('node:fs').existsSync(CLIENT_DIST)) {
   server.use(express.static(CLIENT_DIST, { index: false, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
   server.get('*', (req, res, next) => req.path.startsWith('/api/') ? next() : res.sendFile(path.join(CLIENT_DIST, 'index.html')));
 } else {
@@ -300,8 +277,9 @@ if (require('node:fs').existsSync(CLIENT_DIST)) {
 
 server.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
-  if (error.type === 'entity.too.large') return res.status(413).json({ error: 'حجم الملف يتجاوز الحد الأقصى (8 ميجابايت).' });
+  if (error.type === 'entity.too.large') return res.status(413).json({ error: process.env.VERCEL ? 'حجم الملف يتجاوز الحد المتاح لنسخة Vercel المجانية (4 ميجابايت).' : 'حجم الملف يتجاوز الحد الأقصى (8 ميجابايت).' });
   return res.status(400).json({ error: 'تعذر معالجة الطلب. تحقق من الملف وحاول مرة أخرى.' });
 });
 
-server.listen(PORT, HOST, () => console.log(`QUREO Student Report API listening on ${HOST}:${PORT}`));
+if (require.main === module && !process.env.VERCEL) server.listen(PORT, HOST, () => console.log(`QUREO Student Report API listening on ${HOST}:${PORT}`));
+module.exports = server;

@@ -57,9 +57,9 @@ function App() {
   const [status, setStatus] = useState({ running: false, rows: [], total: 0, done: 0, okCount: 0, failCount: 0, elapsedSec: 0, hasReport: false });
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [stopPending, setStopPending] = useState(false);
   const [drivePickerBusy, setDrivePickerBusy] = useState(false);
   const fileRef = useRef(null);
+  const checkAbortRef = useRef(null);
 
   useEffect(() => {
     fetch('/api/config', { cache: 'no-store' }).then((res) => res.json()).then(setConfig).catch(() => setAuthError('تعذر الاتصال بالخادم.'));
@@ -89,18 +89,6 @@ function App() {
     return () => { active = false; };
   }, [user]);
 
-  useEffect(() => {
-    if (!user || !authorizedEmail) return undefined;
-    let active = true;
-    const poll = async () => {
-      try { const res = await request('/api/status', user); const data = await res.json(); if (active) setStatus(data); }
-      catch (error) { if (active) setMessage(error.message); }
-    };
-    poll();
-    const timer = window.setInterval(poll, 900);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [user, authorizedEmail]);
-
   async function login() {
     setAuthError('');
     try { await signInWithPopup(auth, new GoogleAuthProvider()); }
@@ -114,31 +102,68 @@ function App() {
 
   async function startCheck() {
     if (!file) { setMessage('اختر ملف الطلاب أولًا.'); return; }
-    if (file.size > 8 * 1024 * 1024) { setMessage('حجم الملف يتجاوز الحد الأقصى (8 ميجابايت).'); return; }
+    const maxFileBytes = config.maxFileBytes || 8 * 1024 * 1024;
+    if (file.size > maxFileBytes) { setMessage(`حجم الملف يتجاوز الحد الأقصى (${Math.round(maxFileBytes / 1024 / 1024)} ميجابايت) لهذه النسخة.`); return; }
     if (!/\.(xlsx|xls|csv)$/i.test(file.name)) { setMessage('صيغة الملف غير مدعومة. اختر XLSX أو XLS أو CSV.'); return; }
     setBusy(true); setMessage('');
+    setStatus({ running: true, rows: [], total: 0, done: 0, okCount: 0, failCount: 0, elapsedSec: 0, hasReport: false });
+    const controller = new AbortController();
+    checkAbortRef.current = controller;
     try {
-      const response = await request(`/api/start?name=${encodeURIComponent(file.name)}`, user, { method: 'POST', body: file });
-      const data = await response.json();
-      setStatus((prev) => ({ ...prev, running: true, total: data.total, done: 0, rows: [], hasReport: false }));
-      setMessage(`تم التحقق من الملف. عدد الطلاب: ${data.total}.`);
-    } catch (error) { setMessage(error.message); }
-    finally { setBusy(false); }
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/check?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file, signal: controller.signal, headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${token}` }, cache: 'no-store' });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || 'تعذر بدء الفحص.'); }
+      if (!response.body) throw new Error('المتصفح لا يدعم استقبال تقدم الفحص.');
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let pending = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = pending.split('\n'); pending = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.type === 'start') setStatus((prev) => ({ ...prev, total: event.total }));
+          if (event.type === 'progress') setStatus((prev) => ({ ...prev, running: true, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, rows: [...prev.rows, event.row] }));
+          if (event.type === 'complete') setStatus((prev) => ({ ...prev, running: false, stopRequested: event.stopped, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, hasReport: prev.rows.length > 0 }));
+          if (event.type === 'error') throw new Error(event.error);
+        }
+        if (done) break;
+      }
+      setStatus((prev) => ({ ...prev, running: false, hasReport: prev.rows.length > 0 }));
+      setMessage('اكتمل الفحص.');
+    } catch (error) {
+      if (error.name === 'AbortError') setMessage('تم إيقاف الفحص؛ ستبقى النتائج المكتملة ويمكن تنزيلها.');
+      else setMessage(error.message || 'انقطع الاتصال أثناء الفحص؛ احتُفظ بالنتائج التي وصلت.');
+      setStatus((prev) => ({ ...prev, running: false, stopRequested: true, hasReport: prev.rows.length > 0 }));
+    } finally { checkAbortRef.current = null; setBusy(false); }
   }
 
-  async function stopCheck() {
-    setStopPending(true);
-    try { await request('/api/stop', user, { method: 'POST' }); setMessage('تم طلب إيقاف الفحص؛ ستبقى النتائج المكتملة.'); }
-    catch (error) { setMessage(error.message); }
-    finally { setStopPending(false); }
+  function stopCheck() {
+    checkAbortRef.current?.abort();
   }
 
   async function downloadReport() {
     try {
-      const response = await request('/api/download', user);
-      const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement('a');
-      const disposition = response.headers.get('Content-Disposition') || '';
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'qureo-report.xlsx';
+      const XLSX = await import('xlsx');
+      const validRows = status.rows.filter(Boolean), wb = XLSX.utils.book_new();
+      wb.Workbook = { Views: [{ RTL: true }] };
+      const data = [['الاسم', 'الفصل', 'رقم الطالب', 'الحالة', 'الفصول', 'من 42', 'النسبة %', 'الألماس', 'آخر نشاط']];
+      const buckets = [0, 0, 0, 0, 0]; let failed = 0;
+      for (const row of validRows) {
+        data.push([row.name, row.className, row.studentId, row.status, row.chaptersCount === '' ? '' : Number(row.chaptersCount), row.totalChapters, row.pct === '' ? '' : Number(row.pct), row.diamonds === '' ? '' : Number(row.diamonds), row.lastActivity]);
+        if (row.status !== 'ok' || row.chaptersCount === '') failed++;
+        else { const n = Number(row.chaptersCount); buckets[n === 0 ? 0 : n <= 10 ? 1 : n <= 17 ? 2 : n <= 41 ? 3 : 4]++; }
+      }
+      const ws = XLSX.utils.aoa_to_sheet(data); ws['!views'] = [{ rightToLeft: true }]; ws['!cols'] = [32, 24, 15, 24, 10, 10, 11, 10, 18].map((wch) => ({ wch })); XLSX.utils.book_append_sheet(wb, ws, 'بيانات الطلاب');
+      const total = buckets.reduce((a, b) => a + b, 0), pct = (n) => total ? Math.round(n / total * 1000) / 10 : 0;
+      const summary = [['الفئة / مستوى الإنجاز', 'عدد الطلاب', 'النسبة من المفحوصين %'], ['لم ينجزوا أي فصل (0 فصل)', buckets[0], pct(buckets[0])], ['أنجزوا من 1 إلى 10 فصول', buckets[1], pct(buckets[1])], ['أنجزوا من 11 إلى 17 فصلًا', buckets[2], pct(buckets[2])], ['أنجزوا من 18 إلى 41 فصلًا', buckets[3], pct(buckets[3])], ['أتموا المنهج كاملًا (42 فصلًا)', buckets[4], pct(buckets[4])], ['إجمالي الطلاب المفحوصين بنجاح', total, total ? 100 : 0]];
+      if (failed) summary.push(['تعذر فحصهم', failed, ''], ['الإجمالي الكلي بالملف', total + failed, '']);
+      const ws2 = XLSX.utils.aoa_to_sheet(summary); ws2['!views'] = [{ rightToLeft: true }]; ws2['!cols'] = [36, 16, 24].map((wch) => ({ wch })); XLSX.utils.book_append_sheet(wb, ws2, 'ملخص الإحصائيات');
+      const blob = new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob), link = document.createElement('a');
+      const stamp = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date()).replace(' ', '_').replaceAll(':', '-');
+      const filename = `qureo-report-${stamp}.xlsx`;
       link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
     } catch (error) { setMessage(error.message); }
   }
@@ -197,8 +222,8 @@ function App() {
     <aside className="notice"><strong>تنبيه الخصوصية</strong><p>يرسل هذا التطبيق بيانات الدخول إلى QUREO للتحقق من الحسابات. استخدمه عند وجود تصريح، ووفق سياسة المدرسة. لا يعرض التطبيق كلمات المرور ولا يحفظها في ملفات.</p></aside>
 
     {!config.authReady ? <section className="panel setup"><h2>إعداد تسجيل Google مطلوب</h2><p>يلزم إعداد Firebase، وملف اعتماد Firebase Admin الخاص بالخادم، وقائمة حسابات المعلمين المصرح بها. لا يقبل الخادم عمليات الفحص قبل اكتمال الإعداد.</p><p className="muted">بعد تسجيل الدخول، يجب أن يكون البريد ضمن قائمة السماح التي يضبطها مسؤول التطبيق.</p></section> : !user ? <section className="panel login"><h2>مرحبًا بك</h2><p>سجّل الدخول بحساب Google المعتمد للمدرسة للمتابعة.</p><button className="button google" onClick={login}>المتابعة باستخدام Google</button>{authError && <p className="error-text">{authError}</p>}</section> : !authorizedEmail ? <section className="panel login"><h2>جارٍ التحقق من صلاحية الحساب</h2>{authError && <><p className="error-text">{authError}</p><button className="button secondary" onClick={logout}>تسجيل الخروج</button></>}</section> : <>
-      <section className="panel upload"><div className="section-title"><div><h2>ملف الطلاب</h2><p>XLSX أو XLS أو CSV · حتى 8 ميجابايت · حتى 500 طالب</p></div><span className="chip">42 فصلًا · 6 عمليات بالتوازي</span></div>
-        <div className="controls"><button className="file-button" type="button" onClick={() => fileRef.current?.click()}><span className="upload-icon">↑</span><span><b>{file?.name || 'اختر ملفًا من جهازك'}</b><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)} ميجابايت` : 'يمكنك اختيار الملف من الهاتف'}</small></span></button><input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => { setFile(event.target.files?.[0] || null); setMessage(''); }} /><button className="button secondary" disabled={drivePickerBusy || !config.drivePickerReady} onClick={pickFromDrive}>{drivePickerBusy ? 'جارٍ فتح Drive…' : 'اختيار من Google Drive'}</button><button className="button primary" disabled={busy || status.running || drivePickerBusy} onClick={startCheck}>ابدأ الفحص</button>{status.running && <button className="button danger" disabled={stopPending} onClick={stopCheck}>إيقاف الفحص</button>}{status.hasReport && <button className="button success" onClick={downloadReport}>تنزيل تقرير Excel</button>}<button className="button secondary signout" onClick={logout}>تسجيل الخروج</button></div>
+      <section className="panel upload"><div className="section-title"><div><h2>ملف الطلاب</h2><p>XLSX أو XLS أو CSV · حتى {Math.round((config.maxFileBytes || 8 * 1024 * 1024) / 1024 / 1024)} ميجابايت · حتى 500 طالب</p></div><span className="chip">42 فصلًا · 6 عمليات بالتوازي</span></div>
+        <div className="controls"><button className="file-button" type="button" onClick={() => fileRef.current?.click()}><span className="upload-icon">↑</span><span><b>{file?.name || 'اختر ملفًا من جهازك'}</b><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)} ميجابايت` : 'يمكنك اختيار الملف من الهاتف'}</small></span></button><input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => { setFile(event.target.files?.[0] || null); setMessage(''); }} /><button className="button secondary" disabled={drivePickerBusy || !config.drivePickerReady} onClick={pickFromDrive}>{drivePickerBusy ? 'جارٍ فتح Drive…' : 'اختيار من Google Drive'}</button><button className="button primary" disabled={busy || status.running || drivePickerBusy} onClick={startCheck}>ابدأ الفحص</button>{(busy || status.running) && <button className="button danger" onClick={stopCheck}>إيقاف الفحص</button>}{status.hasReport && !status.running && <button className="button success" onClick={downloadReport}>تنزيل تقرير Excel</button>}<button className="button secondary signout" onClick={logout}>تسجيل الخروج</button></div>
         {!config.drivePickerReady && <p className="muted">اختيار Drive يحتاج تفعيل Google Picker API وإضافة مفتاح API مقيّد. الرفع من الهاتف متاح الآن.</p>}
         <p className="message" role="status">{message || authError}</p>
       </section>
