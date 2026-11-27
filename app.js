@@ -177,10 +177,10 @@ async function checkStudent(student) {
   const jar = new CookieJar();
   try {
     const login = await fetchWithCookies(jar, `${PORTAL}/oauth2/password-login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*', Referer: `${PORTAL}/login?referer=${encodeURIComponent(PORTAL + '/')}`, Origin: PORTAL }, body: JSON.stringify({ student_id: student.student_id.trim(), password: student.password.trim() }) });
-    if (login.status < 200 || login.status >= 300) return { status: 'تعذر تسجيل الدخول', chaptersCount: '', diamonds: '', lastActivity: '' };
+    if (login.status < 200 || login.status >= 300) return { status: `تعذر تسجيل الدخول (${login.status})`, chaptersCount: '', diamonds: '', lastActivity: '' };
     await fetchWithCookies(jar, `${PORTAL}/`).catch(() => {}); await fetchWithCookies(jar, `${APP}/`).catch(() => {});
     const res = await fetchWithCookies(jar, `${APP}${CHAPTERS_PATH}`, { headers: { Accept: 'application/json, text/plain, */*', Referer: `${APP}/` } });
-    if (res.status < 200 || res.status >= 300) return { status: 'تعذر جلب بيانات الفصول', chaptersCount: '', diamonds: '', lastActivity: '' };
+    if (res.status < 200 || res.status >= 300) return { status: `تعذر جلب بيانات الفصول (${res.status})`, chaptersCount: '', diamonds: '', lastActivity: '' };
     let chapters; try { chapters = JSON.parse(res.text); } catch { return { status: 'استجابة غير صالحة', chaptersCount: '', diamonds: '', lastActivity: '' }; }
     if (!Array.isArray(chapters)) return { status: 'استجابة غير متوقعة', chaptersCount: '', diamonds: '', lastActivity: '' };
     const dates = chapters.flatMap((c) => [c.started_at, c.completed_at]).filter(Boolean).sort();
