@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node app.js",
-    "build": "vite build client --outDir dist --emptyOutDir"
+    "build": "vite build client --outDir dist --emptyOutDir",
+    "build:vercel": "vite build client --outDir ../public --emptyOutDir"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

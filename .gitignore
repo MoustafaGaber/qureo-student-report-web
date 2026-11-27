@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+render-upload.env
 
 # Firebase Admin credentials and local secrets.
 secrets/
@@ -11,6 +12,7 @@ firebase-service-account*.json
 # Dependencies, build output, and local caches.
 node_modules/
 client/dist/
+public/
 .npm-cache/
 npm-cache/
 npm-debug.log*
