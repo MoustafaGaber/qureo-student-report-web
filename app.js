@@ -151,11 +151,29 @@ function httpRequest(url, opts = {}) {
     if (u.protocol !== 'https:' || ![new URL(PORTAL).hostname, new URL(APP).hostname].includes(u.hostname)) return reject(new Error('blocked destination'));
     const req = https.request({ hostname: u.hostname, port: 443, path: u.pathname + u.search, method: opts.method || 'GET', headers: opts.headers || {}, timeout: 20000 }, (res) => {
       const chunks = []; res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString('utf8') }));
+      res.on('end', () => resolve({ status: res.statusCode, statusMessage: res.statusMessage, headers: res.headers, text: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', reject);
     if (opts.body) req.write(opts.body); req.end();
   });
+}
+
+function safeQureoErrorMessage(response, student) {
+  let message = String(response.text || response.statusMessage || '');
+  if (/text\/html/i.test(response.headers?.['content-type'] || '')) {
+    message = message.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, ' ');
+  }
+  for (const value of [student.student_id, student.password, student.name, student.class]) {
+    const secret = String(value || '').trim();
+    if (secret) message = message.split(secret).join('[محجوب]');
+  }
+  message = message
+    .replace(/\b(?:Bearer|Basic)\s+[^\s"'<>]+/gi, '[بيانات اعتماد محجوبة]')
+    .replace(/("(?:password|student[_-]?id|access[_-]?token|refresh[_-]?token|authorization|cookie)"\s*:\s*)"[^"]*"/gi, '$1"[محجوب]"')
+    .replace(/\s+/g, ' ').trim();
+  return message.slice(0, 4000);
 }
 
 async function fetchWithCookies(jar, url, opts = {}, redirects = 0) {
@@ -180,7 +198,7 @@ async function checkStudent(student) {
     if (login.status < 200 || login.status >= 300) return { status: `تعذر تسجيل الدخول (${login.status})`, chaptersCount: '', diamonds: '', lastActivity: '' };
     await fetchWithCookies(jar, `${PORTAL}/`).catch(() => {}); await fetchWithCookies(jar, `${APP}/`).catch(() => {});
     const res = await fetchWithCookies(jar, `${APP}${CHAPTERS_PATH}`, { headers: { Accept: 'application/json, text/plain, */*', Referer: `${APP}/` } });
-    if (res.status < 200 || res.status >= 300) return { status: `تعذر جلب بيانات الفصول (${res.status})`, chaptersCount: '', diamonds: '', lastActivity: '' };
+    if (res.status < 200 || res.status >= 300) return { status: `تعذر جلب بيانات الفصول (${res.status})`, diagnostic: safeQureoErrorMessage(res, student), chaptersCount: '', diamonds: '', lastActivity: '' };
     let chapters; try { chapters = JSON.parse(res.text); } catch { return { status: 'استجابة غير صالحة', chaptersCount: '', diamonds: '', lastActivity: '' }; }
     if (!Array.isArray(chapters)) return { status: 'استجابة غير متوقعة', chaptersCount: '', diamonds: '', lastActivity: '' };
     const dates = chapters.flatMap((c) => [c.started_at, c.completed_at]).filter(Boolean).sort();
@@ -195,7 +213,7 @@ async function runJob(students, onProgress, shouldStop) {
   async function worker() {
     while (next < students.length && !shouldStop()) {
       const i = next++, s = students[i], result = await checkStudent(s);
-      rows[i] = { name: s.name, className: s.class, studentId: s.student_id, status: result.status, chaptersCount: result.chaptersCount, totalChapters: TOTAL_CHAPTERS, pct: result.chaptersCount === '' ? '' : Math.round(result.chaptersCount / TOTAL_CHAPTERS * 100), diamonds: result.diamonds, lastActivity: result.lastActivity };
+      rows[i] = { name: s.name, className: s.class, studentId: s.student_id, status: result.status, diagnostic: result.diagnostic || '', chaptersCount: result.chaptersCount, totalChapters: TOTAL_CHAPTERS, pct: result.chaptersCount === '' ? '' : Math.round(result.chaptersCount / TOTAL_CHAPTERS * 100), diamonds: result.diamonds, lastActivity: result.lastActivity };
       done++; if (result.status === 'ok') okCount++; else failCount++;
       onProgress({ row: rows[i], total: students.length, done, okCount, failCount, elapsedSec: ((Date.now() - started) / 1000).toFixed(1) });
     }

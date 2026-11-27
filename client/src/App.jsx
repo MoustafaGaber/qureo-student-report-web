@@ -60,6 +60,7 @@ function App() {
   const [drivePickerBusy, setDrivePickerBusy] = useState(false);
   const fileRef = useRef(null);
   const checkAbortRef = useRef(null);
+  const loggedQureoErrorsRef = useRef(new Set());
 
   useEffect(() => {
     fetch('/api/config', { cache: 'no-store' }).then((res) => res.json()).then(setConfig).catch(() => setAuthError('تعذر الاتصال بالخادم.'));
@@ -109,6 +110,7 @@ function App() {
     setStatus({ running: true, rows: [], total: 0, done: 0, okCount: 0, failCount: 0, elapsedSec: 0, hasReport: false });
     const controller = new AbortController();
     checkAbortRef.current = controller;
+    loggedQureoErrorsRef.current.clear();
     try {
       const token = await user.getIdToken();
       const response = await fetch(`/api/check?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file, signal: controller.signal, headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${token}` }, cache: 'no-store' });
@@ -124,7 +126,16 @@ function App() {
           if (!line.trim()) continue;
           const event = JSON.parse(line);
           if (event.type === 'start') setStatus((prev) => ({ ...prev, total: event.total }));
-          if (event.type === 'progress') setStatus((prev) => ({ ...prev, running: true, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, rows: [...prev.rows, event.row] }));
+          if (event.type === 'progress') {
+            if (event.row?.diagnostic) {
+              const key = `${event.row.status}\n${event.row.diagnostic}`;
+              if (!loggedQureoErrorsRef.current.has(key)) {
+                loggedQureoErrorsRef.current.add(key);
+                console.error('[QUREO] تعذر جلب بيانات الفصول', { status: event.row.status, message: event.row.diagnostic });
+              }
+            }
+            setStatus((prev) => ({ ...prev, running: true, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, rows: [...prev.rows, event.row] }));
+          }
           if (event.type === 'complete') setStatus((prev) => ({ ...prev, running: false, stopRequested: event.stopped, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, hasReport: prev.rows.length > 0 }));
           if (event.type === 'error') throw new Error(event.error);
         }
