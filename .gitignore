@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+render-upload.env
 
 # Firebase Admin credentials and local secrets.
 secrets/
