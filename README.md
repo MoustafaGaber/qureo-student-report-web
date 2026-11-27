@@ -45,9 +45,9 @@ npm start
 
 ### النشر على Vercel
 
-1. ارفع فرع `vercel-version` إلى مستودع GitHub ثم اربط المستودع في Vercel. ملف `vercel.json` يضبط مدة الدالة، ويستخدم Vercel Express التطبيق المصدّر من `app.js`.
+1. ارفع فرع `vercel-version` إلى مستودع GitHub ثم اربط المستودع في Vercel. تُبنى واجهة Vite إلى `client/dist`، ويحوّل `api/[...path].js` طلبات `/api/*` إلى تطبيق Express الموجود في `app.js`.
 2. أضف Environment Variables من لوحة Vercel: `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `ALLOWED_EMAILS`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, و`VITE_GOOGLE_PICKER_API_KEY` إذا كنت تستخدم Drive. ضع JSON كاملًا لحساب Firebase Admin داخل المتغير السري `FIREBASE_SERVICE_ACCOUNT_JSON`.
 3. أضف نطاق `*.vercel.app` أو اسم النشر الفعلي إلى Firebase Authentication → Authorized domains. حدّث قيود HTTP referrer لمفتاح Picker عند استخدام Drive.
 4. ابدأ الاختبار بملف وهمي صغير. راجع قيود مدة دوال Vercel وقيود حجم الطلب، ولا ترفع ملف `.env` أو JSON حساب الخدمة إلى GitHub.
 
-إعداد Vercel مبني على البث في طلب واحد: تقدم الفحص والنتائج تصل مباشرة للمتصفح، والتقرير يُنشأ داخل المتصفح. حد الملف 4 ميجابايت في استضافة Vercel المجانية بسبب حد الطلب المنشور للمنصة، ومدة دالة Hobby القصوى 5 دقائق حسب إعداد Fluid Compute؛ قد تتوقف دفعة طويلة عند انتهاء المهلة مع بقاء النتائج التي وصلت فقط. [حدود دوال Vercel](https://vercel.com/docs/functions/limitations) · [مدة التنفيذ](https://vercel.com/docs/functions/configuring-functions/duration)
+إعداد Vercel مبني على واجهة ثابتة ودالة API واحدة: تقدم الفحص والنتائج تصل مباشرة للمتصفح، والتقرير يُنشأ داخل المتصفح. حد الملف 4 ميجابايت في استضافة Vercel المجانية بسبب حد الطلب المنشور للمنصة، ومدة الدالة تضبط إلى 300 ثانية؛ قد تتوقف دفعة طويلة عند انتهاء المهلة مع بقاء النتائج التي وصلت فقط. [حدود دوال Vercel](https://vercel.com/docs/functions/limitations) · [مدة التنفيذ](https://vercel.com/docs/functions/configuring-functions/duration)
