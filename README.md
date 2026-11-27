@@ -50,4 +50,14 @@ npm start
 3. أضف نطاق `*.vercel.app` أو اسم النشر الفعلي إلى Firebase Authentication → Authorized domains. حدّث قيود HTTP referrer لمفتاح Picker عند استخدام Drive.
 4. ابدأ الاختبار بملف وهمي صغير. راجع قيود مدة دوال Vercel وقيود حجم الطلب، ولا ترفع ملف `.env` أو JSON حساب الخدمة إلى GitHub.
 
+#### إصلاح تسجيل الدخول بالتحويل على متصفحات الهاتف
+
+إذا عاد Google إلى الصفحة الرئيسية دون جلسة على الهاتف، يستخدم المشروع تحويلات Vercel لمسارات `/__/auth/*` و`/__/firebase/*` إلى `qureo-student-report.firebaseapp.com`. في إعداد Vercel غيّر `VITE_FIREBASE_AUTH_DOMAIN` إلى `qureo-student-report-web.vercel.app` ثم أعد النشر. وفي Google Cloud Console أضف URI التالي إلى OAuth Client ID → Authorized redirect URIs، مع إبقاء URI Firebase الحالي:
+
+```text
+https://qureo-student-report-web.vercel.app/__/auth/handler
+```
+
+أبقِ نطاق Vercel ضمن Firebase Authentication → Authorized domains. يعتمد هذا الإعداد على توجيه عكسي شفاف، لا على تحويل HTTP 302؛ وهو المسار الذي توصي به [وثائق Firebase](https://firebase.google.com/docs/auth/web/redirect-best-practices) للواجهات المستضافة خارج Firebase Hosting عند استخدام `signInWithRedirect`.
+
 إعداد Vercel مبني على واجهة ثابتة ودالة API واحدة: تقدم الفحص والنتائج تصل مباشرة للمتصفح، والتقرير يُنشأ داخل المتصفح. حد الملف 4 ميجابايت في استضافة Vercel المجانية بسبب حد الطلب المنشور للمنصة، ومدة الدالة تضبط إلى 300 ثانية؛ قد تتوقف دفعة طويلة عند انتهاء المهلة مع بقاء النتائج التي وصلت فقط. [حدود دوال Vercel](https://vercel.com/docs/functions/limitations) · [مدة التنفيذ](https://vercel.com/docs/functions/configuring-functions/duration)
