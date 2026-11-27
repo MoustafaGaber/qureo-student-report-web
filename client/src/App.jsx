@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithPopup, reauthenticateWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, getRedirectResult, onAuthStateChanged, reauthenticateWithPopup, signInWithRedirect, signOut, GoogleAuthProvider } from 'firebase/auth';
 
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 let pickerScriptPromise;
@@ -74,6 +74,7 @@ function App() {
 
   useEffect(() => {
     if (!auth) return undefined;
+    getRedirectResult(auth).catch((error) => setAuthError(getSignInErrorMessage(error)));
     return onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setAuthorizedEmail('');
@@ -92,7 +93,7 @@ function App() {
 
   async function login() {
     setAuthError('');
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    try { await signInWithRedirect(auth, new GoogleAuthProvider()); }
     catch (error) { setAuthError(getSignInErrorMessage(error)); }
   }
 
@@ -131,7 +132,7 @@ function App() {
               const key = `${event.row.status}\n${event.row.diagnostic}`;
               if (!loggedQureoErrorsRef.current.has(key)) {
                 loggedQureoErrorsRef.current.add(key);
-                console.error('[QUREO] تعذر جلب بيانات الفصول', { status: event.row.status, message: event.row.diagnostic });
+                console.error(`[QUREO] ${event.row.status}`, { message: event.row.diagnostic });
               }
             }
             setStatus((prev) => ({ ...prev, running: true, total: event.total, done: event.done, okCount: event.okCount, failCount: event.failCount, elapsedSec: event.elapsedSec, rows: [...prev.rows, event.row] }));

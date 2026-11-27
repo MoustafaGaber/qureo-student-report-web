@@ -183,6 +183,7 @@ async function fetchWithCookies(jar, url, opts = {}, redirects = 0) {
   const res = await httpRequest(url, { ...opts, headers }); jar.save(res);
   if ([301, 302, 303, 307, 308].includes(res.status)) {
     const location = res.headers.location; if (!location) return res;
+    if (opts.followRedirects === false) return res;
     const nextUrl = new URL(location, url);
     if (![new URL(PORTAL).hostname, new URL(APP).hostname].includes(nextUrl.hostname)) throw new Error('blocked redirect');
     const method = res.status === 303 || ([301, 302].includes(res.status) && (opts.method || 'GET') === 'POST') ? 'GET' : opts.method;
@@ -195,11 +196,18 @@ async function checkStudent(student) {
   const jar = new CookieJar();
   try {
     const login = await fetchWithCookies(jar, `${PORTAL}/oauth2/password-login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*', Referer: `${PORTAL}/login?referer=${encodeURIComponent(PORTAL + '/')}`, Origin: PORTAL }, body: JSON.stringify({ student_id: student.student_id.trim(), password: student.password.trim() }) });
-    if (login.status < 200 || login.status >= 300) return { status: `تعذر تسجيل الدخول (${login.status})`, chaptersCount: '', diamonds: '', lastActivity: '' };
+    if (login.status < 200 || login.status >= 300) return { status: `تعذر تسجيل الدخول (${login.status})`, diagnostic: safeQureoErrorMessage(login, student), chaptersCount: '', diamonds: '', lastActivity: '' };
     await fetchWithCookies(jar, `${PORTAL}/`).catch(() => {}); await fetchWithCookies(jar, `${APP}/`).catch(() => {});
     const res = await fetchWithCookies(jar, `${APP}${CHAPTERS_PATH}`, { headers: { Accept: 'application/json, text/plain, */*', Referer: `${APP}/` } });
+    const chaptersContentType = String(res.headers?.['content-type'] || '');
+    if (res.status === 403 && /The request could not be satisfied/i.test(res.text)) {
+      return { status: 'حظر CloudFront طلب QUREO (403)', diagnostic: 'رفضت بوابة QUREO الطلب القادم من الخادم. يلزم التواصل مع دعم QUREO أو استخدام واجهة تكامل رسمية.', chaptersCount: '', diamonds: '', lastActivity: '' };
+    }
     if (res.status < 200 || res.status >= 300) return { status: `تعذر جلب بيانات الفصول (${res.status})`, diagnostic: safeQureoErrorMessage(res, student), chaptersCount: '', diamonds: '', lastActivity: '' };
-    let chapters; try { chapters = JSON.parse(res.text); } catch { return { status: 'استجابة غير صالحة', chaptersCount: '', diamonds: '', lastActivity: '' }; }
+    if (/text\/html/i.test(chaptersContentType) || /^\s*</.test(res.text)) {
+      return { status: 'تعذر جلب بيانات الفصول: انتهت جلسة الدخول', chaptersCount: '', diamonds: '', lastActivity: '' };
+    }
+    let chapters; try { chapters = JSON.parse(res.text); } catch { return { status: 'استجابة الفصول غير صالحة', diagnostic: safeQureoErrorMessage(res, student), chaptersCount: '', diamonds: '', lastActivity: '' }; }
     if (!Array.isArray(chapters)) return { status: 'استجابة غير متوقعة', chaptersCount: '', diamonds: '', lastActivity: '' };
     const dates = chapters.flatMap((c) => [c.started_at, c.completed_at]).filter(Boolean).sort();
     return { status: 'ok', chaptersCount: chapters.length, diamonds: chapters.reduce((sum, c) => sum + (Number(c.diamond) || 0), 0), lastActivity: formatEgyptTime(dates.at(-1)) };
