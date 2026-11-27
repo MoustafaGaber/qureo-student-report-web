@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: qureo-student-report
+    runtime: node
+    plan: free
+    buildCommand: npm install --no-audit --no-fund && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_PROJECT_ID
+        value: qureo-student-report
+      - key: ALLOWED_EMAILS
+        sync: false
+      - key: VITE_FIREBASE_PROJECT_ID
+        value: qureo-student-report
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        value: "967333099086"
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
+      - key: VITE_GOOGLE_PICKER_API_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

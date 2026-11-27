@@ -1,24 +1,31 @@
-# Node.js dependencies
+# Local environment files; keep the example template versioned.
+.env
+.env.*
+!.env.example
+
+# Firebase Admin credentials and local secrets.
+secrets/
+*service-account*.json
+firebase-service-account*.json
+
+# Dependencies, build output, and local caches.
 node_modules/
+client/dist/
+.npm-cache/
+npm-cache/
 npm-debug.log*
 
-# Built executable & temporary bundle files
-*.exe
-bundle.js
-
-# Student data & generated reports (sensitive / output files)
+# Student files, generated reports, and packaged Windows artifacts.
 *.csv
 *.xlsx
 *.xls
-
-# OS & Editor files
-.DS_Store
-Thumbs.db
-.vscode/
-.env
-node_modules/
+report.xlsx
 *.exe
 *.blob
 bundle.js
 sea-config.json
-report.xlsx
+
+# OS and editor files.
+.DS_Store
+Thumbs.db
+.vscode/
