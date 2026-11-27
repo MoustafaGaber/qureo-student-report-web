@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 render-upload.env
+vercel-upload.env
 
 # Firebase Admin credentials and local secrets.
 secrets/
